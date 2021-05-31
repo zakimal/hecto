@@ -5,8 +5,14 @@ fn main() {
     let _stdout = stdout().into_raw_mode().unwrap(); // get into raw mode
 
     for b in io::stdin().bytes() {
-        let c = b.unwrap() as char;
-        println!("{}", c);
+        let b = b.unwrap();
+        let c = b as char;
+        if c.is_control() {
+            println!("{:?}\r", b);
+        } else {
+            println!("{:?} ({})\r", b, c);
+        }
+
         if c == 'q' {
             break;
         }
