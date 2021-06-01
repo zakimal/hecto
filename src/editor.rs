@@ -33,5 +33,5 @@ impl Editor {
 }
 
 fn die(e: std::io::Error) {
-    panic!(e);
+    panic!("{:?}", e);
 }
