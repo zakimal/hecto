@@ -43,4 +43,12 @@ impl Document {
             row.insert(at.x, c);
         }
     }
+
+    pub fn delete(&mut self, at: &Position) {
+        if self.len() <= at.y {
+            return;
+        }
+        let row = self.rows.get_mut(at.y).unwrap();
+        row.delete(at.x);
+    }
 }
