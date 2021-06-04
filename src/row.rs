@@ -111,14 +111,16 @@ impl Row {
         self.string.as_bytes()
     }
 
-    pub fn find(&self, query: &str) -> Option<usize> {
-        let match_byte_index = self.string.find(query);
+    pub fn find(&self, query: &str, after: usize) -> Option<usize> {
+        let substring: String = self.string[..].graphemes(true).skip(after).collect();
+        let match_byte_index = substring.find(query);
         if let Some(match_byte_index) = match_byte_index {
             for (grapheme_index, (byte_index, _)) in
-                self.string[..].grapheme_indices(true).enumerate()
+                substring[..].grapheme_indices(true).enumerate()
             {
                 if match_byte_index == byte_index {
-                    return Some(grapheme_index);
+                    #[allow(clippy::integer_arithmetic)]
+                    return Some(after + grapheme_index);
                 }
             }
         }
