@@ -28,7 +28,6 @@ struct StatusMessage {
     text: String,
     time: Instant,
 }
-
 impl StatusMessage {
     fn from(message: String) -> Self {
         Self {
@@ -46,6 +45,7 @@ pub struct Editor {
     document: Document,
     status_message: StatusMessage,
     quit_times: u8,
+    highlighted_word: Option<String>,
 }
 
 impl Editor {
@@ -54,28 +54,25 @@ impl Editor {
             if let Err(error) = self.refresh_screen() {
                 die(error);
             }
-
             if self.should_quit {
                 break;
             }
-
             if let Err(error) = self.process_keypress() {
                 die(error);
             }
         }
     }
-
     pub fn default() -> Self {
         let args: Vec<String> = env::args().collect();
         let mut initial_status =
             String::from("HELP: Ctrl-F = find | Ctrl-S = save | Ctrl-Q = quit");
-        let document = if 1 < args.len() {
-            let filename = &args[1];
-            let doc = Document::open(&filename);
+
+        let document = if let Some(file_name) = args.get(1) {
+            let doc = Document::open(file_name);
             if let Ok(doc) = doc {
                 doc
             } else {
-                initial_status = format!("ERR: Could not open file: {}", filename);
+                initial_status = format!("ERR: Could not open file: {}", file_name);
                 Document::default()
             }
         } else {
@@ -84,22 +81,31 @@ impl Editor {
 
         Self {
             should_quit: false,
-            terminal: Terminal::default().expect("Faild to initialize terminal"),
+            terminal: Terminal::default().expect("Failed to initialize terminal"),
             document,
             cursor_position: Position::default(),
             offset: Position::default(),
             status_message: StatusMessage::from(initial_status),
             quit_times: QUIT_TIMES,
+            highlighted_word: None,
         }
     }
 
-    fn refresh_screen(&self) -> Result<(), std::io::Error> {
+    fn refresh_screen(&mut self) -> Result<(), std::io::Error> {
         Terminal::cursor_hide();
         Terminal::cursor_position(&Position::default());
         if self.should_quit {
             Terminal::clear_screen();
             println!("Goodbye.\r");
         } else {
+            self.document.highlight(
+                &self.highlighted_word,
+                Some(
+                    self.offset
+                        .y
+                        .saturating_add(self.terminal.size().height as usize),
+                ),
+            );
             self.draw_rows();
             self.draw_status_bar();
             self.draw_message_bar();
@@ -111,15 +117,14 @@ impl Editor {
         Terminal::cursor_show();
         Terminal::flush()
     }
-
     fn save(&mut self) {
-        if self.document.filename.is_none() {
+        if self.document.file_name.is_none() {
             let new_name = self.prompt("Save as: ", |_, _, _| {}).unwrap_or(None);
             if new_name.is_none() {
                 self.status_message = StatusMessage::from("Save aborted.".to_string());
                 return;
             }
-            self.document.filename = new_name;
+            self.document.file_name = new_name;
         }
 
         if self.document.save().is_ok() {
@@ -128,7 +133,6 @@ impl Editor {
             self.status_message = StatusMessage::from("Error writing file!".to_string());
         }
     }
-
     fn search(&mut self) {
         let old_position = self.cursor_position.clone();
         let mut direction = SearchDirection::Forward;
@@ -156,6 +160,7 @@ impl Editor {
                     } else if moved {
                         editor.move_cursor(Key::Left);
                     }
+                    editor.highlighted_word = Some(query.to_string());
                 },
             )
             .unwrap_or(None);
@@ -164,13 +169,13 @@ impl Editor {
             self.cursor_position = old_position;
             self.scroll();
         }
+        self.highlighted_word = None;
     }
-
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
         let pressed_key = Terminal::read_key()?;
         match pressed_key {
             Key::Ctrl('q') => {
-                if 0 < self.quit_times && self.document.is_dirty() {
+                if self.quit_times > 0 && self.document.is_dirty() {
                     self.status_message = StatusMessage::from(format!(
                         "WARNING! File has unsaved changes. Press Ctrl-Q {} more times to quit.",
                         self.quit_times
@@ -188,7 +193,7 @@ impl Editor {
             }
             Key::Delete => self.document.delete(&self.cursor_position),
             Key::Backspace => {
-                if 0 < self.cursor_position.x || 0 < self.cursor_position.y {
+                if self.cursor_position.x > 0 || self.cursor_position.y > 0 {
                     self.move_cursor(Key::Left);
                     self.document.delete(&self.cursor_position);
                 }
@@ -210,7 +215,6 @@ impl Editor {
         }
         Ok(())
     }
-
     fn scroll(&mut self) {
         let Position { x, y } = self.cursor_position;
         let width = self.terminal.size().width as usize;
@@ -218,17 +222,15 @@ impl Editor {
         let mut offset = &mut self.offset;
         if y < offset.y {
             offset.y = y;
-        } else if offset.y.saturating_add(height) <= y {
+        } else if y >= offset.y.saturating_add(height) {
             offset.y = y.saturating_sub(height).saturating_add(1);
         }
-
         if x < offset.x {
             offset.x = x;
-        } else if offset.x.saturating_add(width) <= x {
+        } else if x >= offset.x.saturating_add(width) {
             offset.x = x.saturating_sub(width).saturating_add(1);
         }
     }
-
     fn move_cursor(&mut self, key: Key) {
         let terminal_height = self.terminal.size().height as usize;
         let Position { mut y, mut x } = self.cursor_position;
@@ -246,9 +248,9 @@ impl Editor {
                 }
             }
             Key::Left => {
-                if 0 < x {
+                if x > 0 {
                     x -= 1;
-                } else if 0 < y {
+                } else if y > 0 {
                     y -= 1;
                     if let Some(row) = self.document.row(y) {
                         x = row.len();
@@ -266,7 +268,7 @@ impl Editor {
                 }
             }
             Key::PageUp => {
-                y = if terminal_height < y {
+                y = if y > terminal_height {
                     y.saturating_sub(terminal_height)
                 } else {
                     0
@@ -283,20 +285,17 @@ impl Editor {
             Key::End => x = width,
             _ => (),
         }
-
         width = if let Some(row) = self.document.row(y) {
             row.len()
         } else {
             0
         };
-
-        if width < x {
+        if x > width {
             x = width;
         }
 
         self.cursor_position = Position { x, y }
     }
-
     fn draw_welcome_message(&self) {
         let mut welcome_message = format!("Hecto editor -- version {}", VERSION);
         let width = self.terminal.size().width as usize;
@@ -308,15 +307,13 @@ impl Editor {
         welcome_message.truncate(width);
         println!("{}\r", welcome_message);
     }
-
-    fn draw_row(&self, row: &Row) {
+    pub fn draw_row(&self, row: &Row) {
         let width = self.terminal.size().width as usize;
         let start = self.offset.x;
         let end = self.offset.x.saturating_add(width);
         let row = row.render(start, end);
         println!("{}\r", row)
     }
-
     #[allow(clippy::integer_division, clippy::integer_arithmetic)]
     fn draw_rows(&self) {
         let height = self.terminal.size().height;
@@ -334,7 +331,6 @@ impl Editor {
             }
         }
     }
-
     fn draw_status_bar(&self) {
         let mut status;
         let width = self.terminal.size().width as usize;
@@ -343,19 +339,22 @@ impl Editor {
         } else {
             ""
         };
-        let mut filename = "[No Name]".to_string();
-        if let Some(name) = &self.document.filename {
-            filename = name.clone();
-            filename.truncate(20);
+
+        let mut file_name = "[No Name]".to_string();
+        if let Some(name) = &self.document.file_name {
+            file_name = name.clone();
+            file_name.truncate(20);
         }
         status = format!(
             "{} - {} lines{}",
-            filename,
+            file_name,
             self.document.len(),
             modified_indicator
         );
+
         let line_indicator = format!(
-            "{}/{}",
+            "{} | {}/{}",
+            self.document.file_type(),
             self.cursor_position.y.saturating_add(1),
             self.document.len()
         );
@@ -367,10 +366,9 @@ impl Editor {
         Terminal::set_bg_color(STATUS_BG_COLOR);
         Terminal::set_fg_color(STATUS_FG_COLOR);
         println!("{}\r", status);
-        Terminal::reset_bg_color();
         Terminal::reset_fg_color();
+        Terminal::reset_bg_color();
     }
-
     fn draw_message_bar(&self) {
         Terminal::clear_current_line();
         let message = &self.status_message;
@@ -380,7 +378,6 @@ impl Editor {
             print!("{}", text);
         }
     }
-
     fn prompt<C>(&mut self, prompt: &str, mut callback: C) -> Result<Option<String>, std::io::Error>
     where
         C: FnMut(&mut Self, Key, &String),
@@ -416,5 +413,5 @@ impl Editor {
 
 fn die(e: std::io::Error) {
     Terminal::clear_screen();
-    panic!("{:?}", e);
+    panic!(e);
 }
